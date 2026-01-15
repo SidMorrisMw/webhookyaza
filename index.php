@@ -5,7 +5,7 @@ date_default_timezone_set('Africa/Blantyre');
 
 // ------------------------- CONFIG -------------------------
 $webhookSecret = 'X7f8a9c2b3e1f4567890abcdef123456';
-$paychanguSecretKey = 'SEC-18SBUtEINjV0DXLEKj62FT4FZaASIAm8';
+$paychanguSecretKey = 'SEC-18';
 
 // ------------------------- PATHS -------------------------
 $logDir = __DIR__ . '/logs';
