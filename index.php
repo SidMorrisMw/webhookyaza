@@ -1,24 +1,16 @@
 <?php
 declare(strict_types=1);
 
-// Enable error reporting for debugging (remove in production)
-error_reporting(E_ALL);
-ini_set('display_errors', '1');
+
 
 date_default_timezone_set('Africa/Blantyre');
 
 // ------------------------- CONFIG -------------------------
 // Read from Railway environment variables
 $paychanguSecretKey = getenv('secretkey');
-$webhookSecret = getenv('WEBHOOK_SECRET') ?: 'X7f8a9c2b3e1f4567890abcdef123456';
+$webhookSecret = getenv('WEBHOOK_SECRET');
 
-// Debug: Check if environment variable is loaded (REMOVE THIS AFTER DEBUGGING)
-if (!$paychanguSecretKey) {
-    http_response_code(500);
-    echo "Configuration error: secretkey not found in environment variables\n";
-    echo "Available env vars: " . implode(', ', array_keys($_ENV)) . "\n";
-    exit;
-}
+
 
 // ------------------------- PATHS -------------------------
 $logDir = __DIR__ . '/logs';
