@@ -1,16 +1,16 @@
 <?php
+// ============================================================================
+// FILE 1: webhook.php (HOSTED ON RAILWAY)
+// ============================================================================
 declare(strict_types=1);
-
-
 
 date_default_timezone_set('Africa/Blantyre');
 
 // ------------------------- CONFIG -------------------------
-// Read from Railway environment variables
 $paychanguSecretKey = getenv('secretkey');
 $webhookSecret = getenv('WEBHOOK_SECRET');
-
-
+$handlerUrl = getenv('HANDLER_URL'); // e.g., https://your-infinityfree-site.com/payment_handler.php
+$handlerSecret = getenv('HANDLER_SECRET'); // Shared secret between webhook and handler
 
 // ------------------------- PATHS -------------------------
 $logDir = __DIR__ . '/logs';
@@ -18,16 +18,13 @@ $receivedLog = $logDir . '/webhook_received.log';
 $suspiciousLog = $logDir . '/webhook_suspicious.log';
 $debugLog = $logDir . '/webhook_debug.log';
 
-// Ensure logs directory exists with proper permissions
+// Ensure logs directory exists
 if (!is_dir($logDir)) {
-    if (!@mkdir($logDir, 0755, true)) {
-        error_log("Failed to create logs directory at: $logDir");
-    }
+    @mkdir($logDir, 0755, true);
 }
 
 // ------------------------- HELPER FUNCTIONS -------------------------
 
-// InfinityFree-compatible getallheaders() replacement
 if (!function_exists('getallheaders')) {
     function getallheaders() {
         $headers = [];
@@ -41,7 +38,6 @@ if (!function_exists('getallheaders')) {
     }
 }
 
-// Case-insensitive header retrieval
 function getHeader($headers, $name) {
     foreach ($headers as $key => $value) {
         if (strcasecmp($key, $name) === 0) {
@@ -51,7 +47,6 @@ function getHeader($headers, $name) {
     return null;
 }
 
-// Safe logging function
 function safeLog($file, $message) {
     @file_put_contents($file, date('Y-m-d H:i:s') . " - " . $message . PHP_EOL, FILE_APPEND);
 }
@@ -60,21 +55,16 @@ function safeLog($file, $message) {
 $payload = file_get_contents('php://input');
 $headers = getallheaders();
 
-// Debug log - helps diagnose issues
-safeLog($debugLog, "Headers received: " . json_encode($headers));
+safeLog($debugLog, "Headers: " . json_encode($headers));
 safeLog($debugLog, "Payload: " . $payload);
 
 // ------------------------- VALIDATE SIGNATURE -------------------------
 
-// Try multiple methods to get the signature (InfinityFree compatibility)
-$signature = getHeader($headers, 'Signature');
-if (!$signature) {
-    $signature = $_SERVER['HTTP_SIGNATURE'] ?? null;
-}
+$signature = getHeader($headers, 'Signature') ?? $_SERVER['HTTP_SIGNATURE'] ?? null;
 
 if (!$signature) {
     http_response_code(400);
-    safeLog($suspiciousLog, "Missing Signature header. Headers: " . json_encode($headers));
+    safeLog($suspiciousLog, "Missing Signature header");
     exit("Missing Signature header");
 }
 
@@ -82,29 +72,22 @@ $computedSignature = hash_hmac('sha256', $payload, $webhookSecret);
 
 if (!hash_equals($computedSignature, $signature)) {
     http_response_code(403);
-    safeLog($suspiciousLog, "Invalid signature. Expected: $computedSignature, Got: $signature, Payload: $payload");
+    safeLog($suspiciousLog, "Invalid signature. Expected: $computedSignature, Got: $signature");
     exit("Invalid signature");
 }
 
 // ------------------------- PARSE PAYLOAD -------------------------
 $data = json_decode($payload, true);
-if (!$data) {
+if (!$data || !isset($data['tx_ref'])) {
     http_response_code(400);
-    safeLog($suspiciousLog, "Invalid JSON payload: $payload");
+    safeLog($suspiciousLog, "Invalid payload: $payload");
     exit("Invalid payload");
 }
 
-// ------------------------- LOG WEBHOOK -------------------------
-safeLog($receivedLog, "Valid webhook received: " . $payload);
-
-// ------------------------- VERIFY TRANSACTION WITH PAYCHANGU -------------------------
-if (!isset($data['tx_ref'])) {
-    http_response_code(400);
-    safeLog($suspiciousLog, "Missing tx_ref in payload: $payload");
-    exit("Missing tx_ref");
-}
-
 $tx_ref = $data['tx_ref'];
+safeLog($receivedLog, "Valid webhook received for tx_ref: $tx_ref");
+
+// ------------------------- VERIFY WITH PAYCHANGU -------------------------
 
 $curl = curl_init();
 curl_setopt_array($curl, [
@@ -125,35 +108,59 @@ $httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
 $err = curl_error($curl);
 curl_close($curl);
 
-if ($err) {
-    safeLog($suspiciousLog, "cURL error for tx_ref $tx_ref: $err");
+if ($err || $httpCode !== 200) {
+    safeLog($suspiciousLog, "Verification failed for $tx_ref: HTTP $httpCode, Error: $err");
     http_response_code(500);
-    exit("Transaction verification failed");
-}
-
-if ($httpCode !== 200) {
-    safeLog($suspiciousLog, "HTTP $httpCode error for tx_ref $tx_ref: $response");
-    http_response_code(500);
-    exit("Transaction verification failed");
+    exit("Verification failed");
 }
 
 $verification = json_decode($response, true);
 
 if (!$verification || $verification['status'] !== 'success' || $verification['data']['status'] !== 'success') {
-    safeLog($suspiciousLog, "Transaction not successful for tx_ref $tx_ref: $response");
-    http_response_code(200); // Return 200 so PayChangu stops retrying
-    exit("Transaction not successful");
+    safeLog($suspiciousLog, "Payment not successful for $tx_ref: $response");
+    http_response_code(200); // Acknowledge to stop retries
+    exit("Payment not successful");
 }
 
-// ------------------------- SUCCESSFUL PAYMENT -------------------------
-safeLog($receivedLog, "Payment verified successfully for tx_ref $tx_ref: $response");
+safeLog($receivedLog, "Payment verified for $tx_ref");
 
-// TODO: Add your business logic here
-// - Update database
-// - Send confirmation email
-// - Trigger fulfillment process
+// ------------------------- FORWARD TO HANDLER -------------------------
 
-// ------------------------- RESPONSE -------------------------
+$handlerPayload = [
+    'tx_ref' => $tx_ref,
+    'verification_data' => $verification['data'],
+    'timestamp' => time()
+];
+
+// Create HMAC signature for handler authentication
+$handlerSignature = hash_hmac('sha256', json_encode($handlerPayload), $handlerSecret);
+
+$handlerCurl = curl_init();
+curl_setopt_array($handlerCurl, [
+    CURLOPT_URL => $handlerUrl,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_POST => true,
+    CURLOPT_POSTFIELDS => json_encode($handlerPayload),
+    CURLOPT_TIMEOUT => 30,
+    CURLOPT_HTTPHEADER => [
+        "Content-Type: application/json",
+        "X-Webhook-Signature: " . $handlerSignature
+    ],
+]);
+
+$handlerResponse = curl_exec($handlerCurl);
+$handlerHttpCode = curl_getinfo($handlerCurl, CURLINFO_HTTP_CODE);
+$handlerError = curl_error($handlerCurl);
+curl_close($handlerCurl);
+
+if ($handlerError || $handlerHttpCode !== 200) {
+    safeLog($suspiciousLog, "Handler failed for $tx_ref: HTTP $handlerHttpCode, Error: $handlerError, Response: $handlerResponse");
+    http_response_code(500);
+    exit("Handler processing failed");
+}
+
+safeLog($receivedLog, "Handler processed successfully for $tx_ref: $handlerResponse");
+
 http_response_code(200);
-echo "Webhook received and transaction verified successfully";
+echo "Webhook processed successfully";
 exit;
