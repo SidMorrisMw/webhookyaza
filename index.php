@@ -1,17 +1,17 @@
 <?php
 // ============================================================================
-// webhook.php - RAILWAY ONLY (NO DATABASE ACCESS)
-// Purpose: Receive Paychangu webhooks, verify them, forward to InfinityFree
+// webhook.php - RAILWAY WITH GET PARAMETER WORKAROUND
+// Purpose: Receive Paychangu webhooks, verify, send to InfinityFree via GET
 // ============================================================================
 declare(strict_types=1);
 
 date_default_timezone_set('Africa/Blantyre');
 
 // ------------------------- CONFIG -------------------------
-$paychanguSecretKey = getenv('secretkey');           // Your Paychangu secret key
-$webhookSecret = getenv('WEBHOOK_SECRET');            // Webhook signature secret from Paychangu
-$handlerUrl = getenv('HANDLER_URL');                  // InfinityFree handler URL
-$handlerSecret = getenv('HANDLER_SECRET');            // Shared secret with InfinityFree
+$paychanguSecretKey = getenv('secretkey');
+$webhookSecret = getenv('WEBHOOK_SECRET');
+$handlerUrl = getenv('HANDLER_URL');  // Should be: https://yazaitmw.great-site.net/webhook_processor.php
+$handlerSecret = getenv('HANDLER_SECRET');
 
 // ------------------------- LOGGING -------------------------
 $logDir = __DIR__ . '/logs';
@@ -53,8 +53,7 @@ function getHeader($headers, $name) {
 $payload = file_get_contents('php://input');
 $headers = getallheaders();
 
-writeLog('debug', "Received webhook - Headers: " . json_encode($headers));
-writeLog('debug', "Payload: " . $payload);
+writeLog('debug', "Received webhook");
 
 // ------------------------- STEP 2: VALIDATE SIGNATURE -------------------------
 $signature = getHeader($headers, 'Signature') ?? $_SERVER['HTTP_SIGNATURE'] ?? null;
@@ -69,7 +68,7 @@ $computedSignature = hash_hmac('sha256', $payload, $webhookSecret);
 
 if (!hash_equals($computedSignature, $signature)) {
     http_response_code(403);
-    writeLog('suspicious', "REJECTED: Invalid signature. Expected: $computedSignature, Got: $signature");
+    writeLog('suspicious', "REJECTED: Invalid signature");
     exit("Invalid signature");
 }
 
@@ -97,10 +96,9 @@ if ($paymentStatus !== 'success') {
 }
 
 // ------------------------- STEP 4: VERIFY WITH PAYCHANGU API -------------------------
-// IMPORTANT: Always verify with Paychangu before trusting webhook data
 $verifyUrl = "https://api.paychangu.com/verify-payment/{$tx_ref}";
 
-writeLog('debug', "Verifying with Paychangu API: $verifyUrl");
+writeLog('debug', "Verifying with Paychangu API");
 
 $ch = curl_init();
 curl_setopt_array($ch, [
@@ -119,7 +117,7 @@ $verifyError = curl_error($ch);
 curl_close($ch);
 
 if ($verifyError || $verifyHttpCode !== 200) {
-    writeLog('suspicious', "Verification FAILED: HTTP $verifyHttpCode, Error: $verifyError");
+    writeLog('suspicious', "Verification FAILED: HTTP $verifyHttpCode");
     http_response_code(500);
     exit("Verification failed");
 }
@@ -128,74 +126,101 @@ $verificationResponse = json_decode($verifyResponse, true);
 $verificationData = $verificationResponse['data'] ?? null;
 
 if (!$verificationData || ($verificationData['status'] ?? '') !== 'success') {
-    writeLog('suspicious', "Verification returned non-success: " . json_encode($verificationData));
+    writeLog('suspicious', "Verification returned non-success");
     http_response_code(200);
     exit("Payment verification failed");
 }
 
-// Validate transaction reference matches
 if (($verificationData['tx_ref'] ?? '') !== $tx_ref) {
-    writeLog('suspicious', "TX_REF MISMATCH! Webhook: $tx_ref, Verified: " . ($verificationData['tx_ref'] ?? 'null'));
+    writeLog('suspicious', "TX_REF MISMATCH!");
     http_response_code(200);
     exit("Transaction reference mismatch");
 }
 
-writeLog('received', "✓ Payment VERIFIED with Paychangu - Amount: {$verificationData['amount']}, Currency: {$verificationData['currency']}");
+writeLog('received', "✓ Payment VERIFIED - Amount: {$verificationData['amount']}, Currency: {$verificationData['currency']}");
 
-// ------------------------- STEP 5: FORWARD TO INFINITYFREE HANDLER -------------------------
+// ------------------------- STEP 5: FORWARD VIA GET PARAMETERS (BYPASS JS CHALLENGE) -------------------------
 
+// Prepare the payload
 $forwardPayload = [
     'tx_ref' => $tx_ref,
-    'verification_data' => $verificationData,  // Full verified payment data
+    'verification_data' => $verificationData,
     'timestamp' => time()
 ];
 
-$forwardSignature = hash_hmac('sha256', json_encode($forwardPayload), $handlerSecret);
+$payloadJson = json_encode($forwardPayload);
+$forwardSignature = hash_hmac('sha256', $payloadJson, $handlerSecret);
 
-writeLog('debug', "Forwarding to InfinityFree: $handlerUrl");
+// Encode payload as base64 for GET parameter
+$encodedPayload = base64_encode($payloadJson);
 
+// Build URL with GET parameters
+$urlWithParams = $handlerUrl . '?' . http_build_query([
+    'payload' => $encodedPayload,
+    'signature' => $forwardSignature
+]);
+
+writeLog('debug', "Forwarding to InfinityFree via GET parameters");
+writeLog('debug', "URL length: " . strlen($urlWithParams) . " bytes");
+
+// Make GET request (bypasses JavaScript challenge)
 $ch = curl_init();
 curl_setopt_array($ch, [
-    CURLOPT_URL => $handlerUrl,
+    CURLOPT_URL => $urlWithParams,
     CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_POST => true,
-    CURLOPT_POSTFIELDS => json_encode($forwardPayload),
     CURLOPT_TIMEOUT => 30,
     CURLOPT_CONNECTTIMEOUT => 10,
-    CURLOPT_HTTPHEADER => [
-        "Content-Type: application/json",
-        "X-Webhook-Signature: " . $forwardSignature,
-        "User-Agent: PaychanguWebhook/1.0"
-    ],
     CURLOPT_FOLLOWLOCATION => true,
-    CURLOPT_SSL_VERIFYPEER => true
+    CURLOPT_SSL_VERIFYPEER => true,
+    CURLOPT_HTTPHEADER => [
+        "User-Agent: PaychanguWebhook/2.0"
+    ]
 ]);
 
 $handlerResponse = curl_exec($ch);
 $handlerHttpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 $handlerError = curl_error($ch);
-$connectTime = curl_getinfo($ch, CURLINFO_CONNECT_TIME);
-$totalTime = curl_getinfo($ch, CURLINFO_TOTAL_TIME);
+$effectiveUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
 curl_close($ch);
 
-// Log detailed response for debugging
-writeLog('debug', "Handler response: HTTP $handlerHttpCode, Connect: {$connectTime}s, Total: {$totalTime}s");
-writeLog('debug', "Handler body: $handlerResponse");
+writeLog('debug', "Handler response: HTTP $handlerHttpCode");
 
 if ($handlerError) {
     writeLog('suspicious', "Handler connection ERROR: $handlerError");
     http_response_code(500);
-    exit("Handler connection failed: $handlerError");
+    exit("Handler connection failed");
+}
+
+// Check if we got a JSON response (success) or HTML (still blocked)
+$responseData = json_decode($handlerResponse, true);
+
+if ($responseData === null && strpos($handlerResponse, '<html>') !== false) {
+    writeLog('suspicious', "Handler still returned HTML/JavaScript challenge");
+    writeLog('debug', "Response preview: " . substr($handlerResponse, 0, 500));
+    http_response_code(500);
+    exit("Handler returned JavaScript challenge - GET parameter approach failed");
 }
 
 if ($handlerHttpCode !== 200) {
-    writeLog('suspicious', "Handler returned HTTP $handlerHttpCode: $handlerResponse");
+    writeLog('suspicious', "Handler returned HTTP $handlerHttpCode");
     http_response_code(500);
     exit("Handler processing failed");
 }
 
-writeLog('received', "✓✓✓ SUCCESS - Handler processed payment for $tx_ref");
-
-http_response_code(200);
-echo "Webhook processed successfully";
-exit;
+// Check if handler actually processed the payment
+if ($responseData && isset($responseData['success']) && $responseData['success']) {
+    writeLog('received', "✓✓✓ SUCCESS - Handler processed payment for $tx_ref");
+    writeLog('received', "Handler data: " . json_encode($responseData['data'] ?? []));
+    http_response_code(200);
+    echo json_encode([
+        'success' => true,
+        'message' => 'Payment processed successfully',
+        'tx_ref' => $tx_ref,
+        'handler_response' => $responseData
+    ]);
+    exit;
+} else {
+    writeLog('suspicious', "Handler returned non-success response: $handlerResponse");
+    http_response_code(500);
+    exit("Handler processing failed");
+}
