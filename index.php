@@ -4,8 +4,15 @@ declare(strict_types=1);
 date_default_timezone_set('Africa/Blantyre');
 
 // ------------------------- CONFIG -------------------------
-$webhookSecret = 'X7f8a9c2b3e1f4567890abcdef123456';
-$paychanguSecretKey = 'SEC-18';
+// Read from environment variables
+$webhookSecret = getenv('WEBHOOK_SECRET');
+$paychanguSecretKey = getenv('secretkey');
+
+// Validate that required secrets are present
+if (!$paychanguSecretKey) {
+    error_log('CRITICAL: secretkey environment variable not set');
+    http_response_code(500);
+    exit('Configuration error');
 
 // ------------------------- PATHS -------------------------
 $logDir = __DIR__ . '/logs';
