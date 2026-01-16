@@ -1,18 +1,24 @@
 <?php
 declare(strict_types=1);
 
+// Enable error reporting for debugging (remove in production)
+error_reporting(E_ALL);
+ini_set('display_errors', '1');
+
 date_default_timezone_set('Africa/Blantyre');
 
 // ------------------------- CONFIG -------------------------
-// Read from environment variables
-$webhookSecret = getenv('WEBHOOK_SECRET');
+// Read from Railway environment variables
 $paychanguSecretKey = getenv('secretkey');
+$webhookSecret = getenv('WEBHOOK_SECRET') ?: 'X7f8a9c2b3e1f4567890abcdef123456';
 
-// Validate that required secrets are present
+// Debug: Check if environment variable is loaded (REMOVE THIS AFTER DEBUGGING)
 if (!$paychanguSecretKey) {
-    error_log('CRITICAL: secretkey environment variable not set');
     http_response_code(500);
-    exit('Configuration error');
+    echo "Configuration error: secretkey not found in environment variables\n";
+    echo "Available env vars: " . implode(', ', array_keys($_ENV)) . "\n";
+    exit;
+}
 
 // ------------------------- PATHS -------------------------
 $logDir = __DIR__ . '/logs';
@@ -20,9 +26,11 @@ $receivedLog = $logDir . '/webhook_received.log';
 $suspiciousLog = $logDir . '/webhook_suspicious.log';
 $debugLog = $logDir . '/webhook_debug.log';
 
-// Ensure logs directory exists with proper permissions for InfinityFree
+// Ensure logs directory exists with proper permissions
 if (!is_dir($logDir)) {
-    @mkdir($logDir, 0755, true);
+    if (!@mkdir($logDir, 0755, true)) {
+        error_log("Failed to create logs directory at: $logDir");
+    }
 }
 
 // ------------------------- HELPER FUNCTIONS -------------------------
@@ -116,7 +124,7 @@ curl_setopt_array($curl, [
     CURLOPT_CONNECTTIMEOUT => 10,
     CURLOPT_HTTPHEADER => [
         "accept: application/json",
-       "Authorization: Bearer " . $paychanguSecretKey
+        "Authorization: Bearer " . $paychanguSecretKey
     ],
 ]);
 
