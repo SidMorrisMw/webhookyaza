@@ -85,50 +85,22 @@ if (!$data || !isset($data['tx_ref'])) {
 }
 
 $tx_ref = $data['tx_ref'];
-safeLog($receivedLog, "Valid webhook received for tx_ref: $tx_ref");
+$paymentStatus = $data['status'] ?? null;
 
-// ------------------------- VERIFY WITH PAYCHANGU -------------------------
+safeLog($receivedLog, "Valid webhook received for tx_ref: $tx_ref, status: $paymentStatus");
 
-$curl = curl_init();
-curl_setopt_array($curl, [
-    CURLOPT_URL => "https://api.paychangu.com/verify-payment/" . $tx_ref,
-    CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_SSL_VERIFYPEER => true,
-    CURLOPT_SSL_VERIFYHOST => 2,
-    CURLOPT_TIMEOUT => 30,
-    CURLOPT_CONNECTTIMEOUT => 10,
-    CURLOPT_HTTPHEADER => [
-        "accept: application/json",
-        "Authorization: Bearer " . $paychanguSecretKey
-    ],
-]);
-
-$response = curl_exec($curl);
-$httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
-$err = curl_error($curl);
-curl_close($curl);
-
-if ($err || $httpCode !== 200) {
-    safeLog($suspiciousLog, "Verification failed for $tx_ref: HTTP $httpCode, Error: $err");
-    http_response_code(500);
-    exit("Verification failed");
-}
-
-$verification = json_decode($response, true);
-
-if (!$verification || $verification['status'] !== 'success' || $verification['data']['status'] !== 'success') {
-    safeLog($suspiciousLog, "Payment not successful for $tx_ref: $response");
+// Only process successful payments
+if ($paymentStatus !== 'success') {
+    safeLog($receivedLog, "Payment not successful for $tx_ref: status = $paymentStatus");
     http_response_code(200); // Acknowledge to stop retries
     exit("Payment not successful");
 }
-
-safeLog($receivedLog, "Payment verified for $tx_ref");
 
 // ------------------------- FORWARD TO HANDLER -------------------------
 
 $handlerPayload = [
     'tx_ref' => $tx_ref,
-    'verification_data' => $verification['data'],
+    'payment_data' => $data,
     'timestamp' => time()
 ];
 
