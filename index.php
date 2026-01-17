@@ -1,6 +1,5 @@
-
 // ============================================================================
-// FILE 1: webhook.php - DEPLOY ON RAILWAY
+// FILE 1: webhook.php - DEPLOY THIS FILE ON RAILWAY
 // ============================================================================
 <?php
 declare(strict_types=1);
