@@ -94,7 +94,7 @@ if ($webhookSecret) {
     echo "<pre>Computed Signature: " . $fakeSignature . "</pre>";
     echo "<p class='info'>Copy this signature and use it to test webhook.php with curl:</p>";
     echo "<pre style='background:#000;color:#0f0;padding:15px;'>";
-    echo "curl -X POST https://your-railway-url.up.railway.app/webhook.php?action=webhook \\\n";
+    echo "curl -X POST https://webhookyaza-production.up.railway.app/?action=webhook \\\n";
     echo "  -H 'Content-Type: application/json' \\\n";
     echo "  -H 'Signature: $fakeSignature' \\\n";
     echo "  -d '$fakePayload'";
@@ -109,7 +109,7 @@ if ($webhookSecret) {
 echo "<h2>6. Test get_pending Endpoint</h2>";
 if ($sharedSecret) {
     $token = hash_hmac('sha256', date('Y-m-d'), $sharedSecret);
-    $testUrl = "https://" . $_SERVER['HTTP_HOST'] . "/webhook.php?action=get_pending&token=" . urlencode($token);
+    $testUrl = "https://" . $_SERVER['HTTP_HOST'] . "/index.php?action=get_pending&token=" . urlencode($token);
     
     echo "<p>Test URL (click to test):</p>";
     echo "<a href='$testUrl' target='_blank' style='color:blue;'>$testUrl</a><br><br>";
